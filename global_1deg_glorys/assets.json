@@ -1,0 +1,15 @@
+{
+  "forcing_default": {
+    "url": "https://sid.erda.dk/share_redirect/gsdZADr8to/global_1deg/forcing_1deg_global.nc",
+    "md5": "1fc86f88acd820da078c8da5873cfa01"
+  },
+  "forcing_era5": {
+    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg/ERA5_1deg_1986_Flux_interp.nc"
+  },
+  "ic_glorys12": {
+    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg/Glorys_1993_01.nc"
+  },
+  "restoring_glorys12": {
+    "url": "/Odyssey/private/e25cheve/veros/veros_assets/global_1deg/Glorys_restoring.nc"
+  }
+}
