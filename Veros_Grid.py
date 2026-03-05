@@ -7,9 +7,8 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-def Generate_grid_file(veros_in,veros_out, output_path):
+def Generate_grid_file(veros_in, output_path):
     ds_in = xr.open_dataset(veros_in, chunks={"time":1})
-    ds_out = xr.open_dataset(veros_out, chunks={"time":1})
     new_ds = xr.Dataset(coords={
                             "xt": ds_in["xt"],
                             "xu": ds_in["xu"],
@@ -21,8 +20,7 @@ def Generate_grid_file(veros_in,veros_out, output_path):
     return new_ds
 
 
-veros_in = "/Odyssey/private/e25cheve/simu_veros/runs/Glorys_IC/global_1deg.averages.nc"
-veros_out = "/Odyssey/private/e25cheve/simu_veros/global_flexible/outputs/global_flexible.averages.nc"
-output_path = "/Odyssey/private/e25cheve/data/interp_grid.nc"
-Generate_grid_file(veros_in, veros_out,output_path)
+veros_in = "/Odyssey/private/e25cheve/simu_veros/runs/global_1deg_glorys/global_1deg.averages.nc"
+output_path = "/Odyssey/private/e25cheve/data/interp_grid_60_levels.nc"
+Generate_grid_file(veros_in,output_path)
 

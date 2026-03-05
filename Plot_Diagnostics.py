@@ -9,10 +9,16 @@ from pathlib import Path
 import sys
 from matplotlib import ticker,_cm
 from datetime import datetime, timedelta
+import cftime
 import matplotlib.dates as mdates
+import matplotlib.colors as mcolors
 from dateutil import tz
 import gsw
+from matplotlib.ticker import LogFormatter, LogLocator
+import matplotlib.ticker as ticker
 import scienceplots
+import cmasher as cmr
+import cmocean as cmo
 plt.style.use('science')
 
 class Diagnostics:
@@ -23,7 +29,7 @@ class Diagnostics:
         self.folder_path.mkdir(exist_ok=True)
 
         self.ds = nc.Dataset(self.run_dir / "global_1deg.averages.nc")
-        self.snapshot = nc.Dataset(self.run_dir / "global_1deg.snapshot.nc")
+        self.ds_energy = nc.Dataset(self.run_dir / "global_1deg.energy.nc")
 
         self.xt = self.ds.variables["xt"][:]
         self.xt, self.sort_idx = self.cyclic(self.xt)
@@ -34,28 +40,43 @@ class Diagnostics:
         self.zt = self.ds.variables["zt"][:]
         self.zw = self.ds.variables["zw"][:]
 
-        time_var = self.ds.variables["Time"]
-        
-        self.dates = np.array([
-            start_date + timedelta(days=float(t))
-            for t in time_var[:]
-        ])
-        print(self.dates)
+        units = f"days since {start_date:%Y-%m-%d}"
 
-        time_var_snap = self.snapshot.variables["Time"]
-         
-        self.snapshot_dates = np.array([
-            start_date + timedelta(days=float(t))
-            for t in time_var_snap[:]
-        ])
+        time_var = self.ds.variables["Time"]
+        self.dates = cftime.num2date(
+            time_var[:],
+            units=units,
+            calendar="360_day"
+        )
+        
+        time_var_nrj = self.ds_energy["Time"] 
+        self.nrj_dates = cftime.num2date(
+            time_var_nrj[:],
+            units=units,
+            calendar="360_day"
+        )        
 
         self.epsilon = 1e-6
 
-    def get_time_indices(self, n_years=10, use_snapshot=False):
-        dates = self.snapshot_dates if use_snapshot else self.dates
+    def get_time_indices_old(self, n_years=10, use_energy=False):
+        dates = self.nrj_dates if use_energy else self.dates
         last_year = dates[-1].year
         first_year = last_year - n_years + 1
         idx = [i for i, d in enumerate(dates) if d.year >= first_year]
+        return np.array(idx)
+
+    def get_time_indices(self, n_years=10, use_energy=False):
+        dates = self.nrj_dates if use_energy else self.dates
+        last_date = dates[-1]
+        if last_date.month < 12 or last_date.day < 30:
+            last_year = last_date.year - 1
+        else:
+            last_year = last_date.year
+    
+        first_year = last_year - n_years + 1
+    
+        idx = [i for i, d in enumerate(dates) if first_year <= d.year <= last_year]
+    
         return np.array(idx)
 
     def cyclic(self,x):
@@ -65,7 +86,7 @@ class Diagnostics:
         return x,sort_idx
 
     def plot_map(self, lon, lat, field, title, filename,
-                 cmap="coolwarm", levels=100,
+                 cmap="coolwarm", levels=150,
                  u=None, v=None):
 
         vmin = np.nanmin(field)
@@ -81,13 +102,14 @@ class Diagnostics:
             transform=ccrs.PlateCarree(),
             extend="both"
         )
+        cf.set_edgecolor('face')
 
         plt.colorbar(cf, fraction=0.046, pad=0.04)
 
         if u is not None and v is not None:
             ax.streamplot(
                 lon, lat, u, v,
-                color="k",
+                color="w",
                 linewidth=0.3,
                 density=1.5,
                 transform=ccrs.PlateCarree()
@@ -101,64 +123,126 @@ class Diagnostics:
                     dpi=200, bbox_inches="tight")
         plt.close()
 
-    def sst(self, n_years=10):
+    def vertical_plot_map(self, lat, depth, field, title, filename,
+                          cmap="coolwarm", levels=150):
+    
+        vmin = np.nanmin(field)
+        vmax = np.nanmax(field) + self.epsilon
+    
+        plt.figure(figsize=(10, 6))
+    
+        cf = plt.contourf(
+                lat, -depth, field,
+            np.linspace(vmin, vmax, levels),
+            cmap=cmap,
+            extend="both"
+        )
+    
+        cf.set_edgecolor("face")
+    
+        plt.colorbar(cf, fraction=0.046, pad=0.04)
+    
+        plt.gca().invert_yaxis()  # depth increasing downward
+    
+        plt.xlabel("Latitude")
+        plt.ylabel("Depth (m)")
+        plt.title(title, fontsize=18)
+    
+        plt.savefig(
+            self.folder_path / filename,
+            dpi=200,
+            bbox_inches="tight"
+        )
+    
+        plt.close()
 
+    def temp(self, n_years=10,vert=False):
         idx = self.get_time_indices(n_years)
-
-        sst = np.mean(
-            self.ds.variables["temp"][idx, -1, :, :],
-            axis=0
-        )
-
-        sst = sst[:, self.sort_idx]
         year = self.dates[idx[-1]].year
+        cmap = cmo.cm.thermal
+        if vert:
+            temp = np.mean(
+                self.ds.variables["temp"][idx, :, :, :],
+                axis=(0,3)
+            )
+            self.vertical_plot_map(
+                 self.yt, self.zt, temp,
+                f"Temperature (last {n_years} years)",
+                f"Temp_{year}_vert.pdf",
+                cmap = cmap
+            )
 
-        self.plot_map(
-            self.xt, self.yt, sst,
-            f"SST (last {n_years} years)",
-            f"SST_{year}.pdf"
-        )
+        else:
+            temp = np.mean(
+                self.ds.variables["temp"][idx, -1, :, :],
+                axis=0
+            )
 
-        print("SST done")
+            temp = temp[:, self.sort_idx]
 
-    def sss(self, n_years=10):
 
+            self.plot_map(
+                self.xt, self.yt, temp,
+                f"SST (last {n_years} years)",
+                f"SST_{year}.pdf",
+                cmap = cmap
+            )
+        if vert:
+            print("SST done")
+        else:
+            print("Vertical temperature done")
+
+    def salt(self, n_years=10,vert=False):
         idx = self.get_time_indices(n_years)
-
-        sss = np.mean(
-            self.ds.variables["salt"][idx, -1, :, :],
-            axis=0
-        )
-
-        sss = sss[:, self.sort_idx]
         year = self.dates[idx[-1]].year
+        cmap = cmo.cm.haline
+        if vert:
+            salt = np.mean(
+                self.ds.variables["salt"][idx, :, :, :],
+                axis=(0,3)
+            )
+            self.vertical_plot_map(
+                 self.yt, self.zt, salt,
+                f"Salinity (last {n_years} years)",
+                f"Salt_{year}_vert.pdf",
+                cmap = cmap
+            )
 
-        self.plot_map(
-            self.xt, self.yt, sss,
-            f"SSS (last {n_years} years)",
-            f"SSS_{year}.pdf"
-        )
+        else:
+            salt = np.mean(
+                self.ds.variables["salt"][idx, -1, :, :],
+                axis=0
+            )
 
-        print("SSS done")
+            salt = salt[:, self.sort_idx]
+
+
+            self.plot_map(
+                self.xt, self.yt, salt,
+                f"SSS (last {n_years} years)",
+                f"SSS_{year}.pdf",
+                cmap = cmap
+            )
+
+        if vert:
+            print("SSS done")
+        else:
+            print("Vertical salinity done")
 
     def ssh(self, n_years=10):
-
         idx = self.get_time_indices(n_years)
-
         ssh = np.mean(
             self.ds.variables["ssh"][idx, :, :],
             axis=0
         )
-
         ssh = ssh[:, self.sort_idx]
+        ssh = ssh - np.nanmean(ssh)
         year = self.dates[idx[-1]].year
-
         self.plot_map(
             self.xt, self.yt, ssh,
             f"SSH (last {n_years} years)",
             f"SSH_{year}.pdf"
         )
-
         print("SSH done")
 
     def heat_flux(self, n_years=10):
@@ -186,9 +270,6 @@ class Diagnostics:
 
         print("Heat flux done")
 
-    def find_month(self,month):
-        return np.array([i for i, d in enumerate(self.dates) if d.month == month])
-
     def compute_mld(self,temp,salt,zt,drho=0.03, zref=10.0):
         nz, ny, nx = temp.shape
         kref = np.argmin(np.abs(zt - zref))
@@ -207,17 +288,11 @@ class Diagnostics:
     
         idx = self.get_time_indices(n_years=n_years)
     
-        temp = self.ds.variables['temp'][idx, :, :, :]
-        salt = self.ds.variables['salt'][idx, :, :, :]
-    
-        temp = temp[:, :, :, self.sort_idx]
-        salt = salt[:, :, :, self.sort_idx]
-    
         zt = self.zt
         lat = self.yt
     
-        idx_winter = [i for i in idx if self.dates[i].month in [1, 2, 3, 4]]
-        idx_summer = [i for i in idx if self.dates[i].month in [7, 8, 9, 10]]
+        idx_winter = [i for i in idx if self.dates[i].month in [1, 2, 3]]
+        idx_summer = [i for i in idx if self.dates[i].month in [7, 8, 9]]
     
         mld_winter_all = []
         for it in idx_winter:
@@ -255,9 +330,8 @@ class Diagnostics:
     
         mld_winter, mld_summer = self.seasonal_mld(n_years)
     
-        maxval = max(np.nanmax(mld_winter), np.nanmax(mld_summer))
-        levels = np.arange(0, maxval, 25)
-    
+        maxvals = [500,100] #[np.nanmax(mld_winter), np.nanmax(mld_summer)]
+        scales = ['linear','linear']
         fig, axs = plt.subplots(
             1, 2,
             figsize=(18, 6),
@@ -271,29 +345,42 @@ class Diagnostics:
     
         fields = [mld_winter, mld_summer]
     
-        for ax, field, title in zip(axs, fields, titles):
-    
+        for ax, field, title, vmax, scale in zip(axs, fields, titles, maxvals, scales):
+            if scale == 'log':
+                norm = mcolors.LogNorm(vmin=1, vmax=vmax)
+                levels = np.logspace(np.log10(1), np.log10(vmax), num=200)
+
+            else:
+                levels = np.arange(0, vmax, vmax/200)
+                norm = mcolors.Normalize(vmin=0, vmax=vmax)
+
             cf = ax.contourf(
                 self.xt, self.yt, field,
                 levels=levels,
                 cmap='viridis',
+                norm=norm,
                 extend='max',
                 transform=ccrs.PlateCarree()
             )
-    
+
+            cf.set_edgecolor('face')
             ax.add_feature(cfeature.GSHHSFeature('low', levels=[1, 2, 6]))
             ax.coastlines()
             ax.set_title(title, fontsize=16)
-    
-        cbar = fig.colorbar(
-            cf,
-            ax=axs,
-            orientation='horizontal',
-            fraction=0.06,
-            pad=0.08
-        )
-        cbar.set_label('Mixed Layer Depth (m)', fontsize=12)
-    
+        
+            cbar = fig.colorbar(
+                cf,
+                ax=ax,
+                orientation='horizontal',
+                fraction=0.06,
+                pad=0.08
+            )
+            if scale =='log':
+                cbar.locator = LogLocator(base=10.0,subs=[1,2,5], numticks=10)
+                cbar.formatter = LogFormatter(base=10, labelOnlyBase=False) 
+                cbar.update_ticks()
+            cbar.set_label('Mixed Layer Depth (m)', fontsize=12)
+        
         plot_name = f"MLD_winter_summer_{self.dates[-1].year}.pdf"
         plt.savefig(self.folder_path / plot_name,
                     dpi=200, bbox_inches='tight')
@@ -302,47 +389,70 @@ class Diagnostics:
         print('MLD plot done')
 
     def velocity(self, n_years=10):
-
         idx = self.get_time_indices(n_years)
-
         u = np.mean(
             self.ds.variables["u"][idx, -1, :, :],
             axis=0
         )
-
         v = np.mean(
             self.ds.variables["v"][idx, -1, :, :],
             axis=0
         )
-
         u = u[:, self.sort_idx]
         v = v[:, self.sort_idx]
-
         speed = np.sqrt(u**2 + v**2)
         year = self.dates[idx[-1]].year
-
+        cmap = cmr.ocean
         self.plot_map(
             self.xt, self.yt, speed,
             f"Surface velocity (last {n_years} years)",
             f"Velocity_{year}.pdf",
+            cmap=cmap,
             u=u, v=v
         )
-
         print("Velocity done")
 
-    def run_all(self, n_years_default=10):
+    def energy(self):
+        eke_m = self.ds_energy['k_m'][:]
 
-        self.sst(n_years_default)
-        self.sss(n_years_default)
+        x = [datetime(d.year, d.month, d.day) for d in self.nrj_dates]
+        fig, ax = plt.subplots(figsize=(9, 4))
+         
+        ax.plot(x, eke_m,color='black', lw=0.5)
+        ax.set_xlabel("Time")
+        ax.set_ylabel(r"$k_m$")
+        ax.set_title(r"$k_m$ convergence")
+        
+        locator = mdates.AutoDateLocator(minticks=5, maxticks=8)
+        formatter = mdates.ConciseDateFormatter(locator)
+        
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(formatter)
+        ax.xaxis.set_minor_locator(ticker.AutoMinorLocator(6))
+        
+        ax.grid(True,alpha=0.3)
+        fig.autofmt_xdate()
+        plt.tight_layout()
+        plt.savefig(self.folder_path/'Energy_plot.pdf')
+        plt.close()
+        print("Energy done")
+    
+
+    def run_all(self, n_years_default=10):
+        self.sst(n_years_default,vert=True)
+        self.sst(n_years_default,vert=False)
+        self.sss(n_years_default,vert=True)
+        self.sss(n_years_default,vert=False)
         self.ssh(n_years_default)
         self.velocity(n_years_default)
-#        self.heat_flux(n_years_default)
+        self.energy()
+        self.heat_flux(n_years_default)
         self.mld(n_years=1)
 
-start = datetime(1986,4,2)
-run_dir = "/Odyssey/private/e25cheve/simu_veros/runs/global_1deg_glorys/output"
+start = datetime(1986,1,1)
+run_dir = "/Odyssey/private/e25cheve/simu_veros/runs/global_1deg_glorys"
 D = Diagnostics(run_dir,start)
-#D.run_all()
+D.run_all()
 
 
 

@@ -11,6 +11,7 @@ from dateutil import tz
 import warnings
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client
+from glob import glob
 
 warnings.filterwarnings("ignore")
 
@@ -426,11 +427,31 @@ class HorizontalRegridder:
 
 def main():
     client = Client(n_workers=16, threads_per_worker=1)
-    variables = ["thetao","so","zos","mlotst"]
-    glorys_path = "/Odyssey/private/e25cheve/data/Glorys_Climatology/glorys12_clim_month.nc"
-    grid_path = "/Odyssey/private/e25cheve/data/interp_grid.nc"
-    Glo = GlorysPreprocessor(glorys_path,grid_path,single_depth=True,verbose=True)
-    Glo.write(variables,"/Odyssey/private/e25cheve/data/","Glorys_restoring.nc")
+
+    variables = ["thetao", "so", "zos", "mlotst"]
+    glorys_pattern = "/Odyssey/private/e25cheve/data/Glorys_Climatology/mercatorglorys12v1_gl12_mean_1993_*"
+    grid_path = "/Odyssey/private/e25cheve/data/interp_grid_60_levels.nc"
+
+    files = sorted(glob(glorys_pattern))
+
+    for f in files:
+        print(f"Processing {f}")
+
+        Glo = GlorysPreprocessor(
+            f,
+            grid_path,
+            single_depth=False,
+            verbose=True
+        )
+
+        output_name = os.path.basename(f).replace(".nc", "_validation.nc")
+
+        Glo.write(
+            variables,
+            "/Odyssey/private/e25cheve/data/Glorys_Climatology/",
+            output_name
+        )
+
 
 if __name__ == "__main__":
     main()
