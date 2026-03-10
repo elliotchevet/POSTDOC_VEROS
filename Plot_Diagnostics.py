@@ -19,6 +19,7 @@ import matplotlib.ticker as ticker
 import scienceplots
 import cmasher as cmr
 import cmocean as cmo
+import imageio
 plt.style.use('science')
 
 class Diagnostics:
@@ -30,6 +31,7 @@ class Diagnostics:
 
         self.ds = nc.Dataset(self.run_dir / "global_1deg.averages.nc")
         self.ds_energy = nc.Dataset(self.run_dir / "global_1deg.energy.nc")
+        self.ds_snap = nc.Dataset(self.run_dir / "global_1deg.snapshot.nc")
 
         self.xt = self.ds.variables["xt"][:]
         self.xt, self.sort_idx = self.cyclic(self.xt)
@@ -40,6 +42,7 @@ class Diagnostics:
         self.zt = self.ds.variables["zt"][:]
         self.zw = self.ds.variables["zw"][:]
 
+        self.start_date = start_date
         units = f"days since {start_date:%Y-%m-%d}"
 
         time_var = self.ds.variables["Time"]
@@ -56,28 +59,31 @@ class Diagnostics:
             calendar="360_day"
         )        
 
+        time_var_snap = self.ds_snap["Time"] 
+        self.snap_dates = cftime.num2date(
+            time_var_snap[:],
+            units=units,
+            calendar="360_day"
+        )        
         self.epsilon = 1e-6
 
-    def get_time_indices_old(self, n_years=10, use_energy=False):
-        dates = self.nrj_dates if use_energy else self.dates
-        last_year = dates[-1].year
-        first_year = last_year - n_years + 1
-        idx = [i for i, d in enumerate(dates) if d.year >= first_year]
-        return np.array(idx)
-
-    def get_time_indices(self, n_years=10, use_energy=False):
-        dates = self.nrj_dates if use_energy else self.dates
+    def get_time_indices(self, n_years=10, snapshot=False):
+        dates = self.snap_dates if snapshot else self.dates
+        print(dates)
         last_date = dates[-1]
-        if last_date.month < 12 or last_date.day < 30:
-            last_year = last_date.year - 1
+        if last_date.year == self.start_date.year:
+            return np.arange(len(dates))
         else:
-            last_year = last_date.year
-    
-        first_year = last_year - n_years + 1
-    
-        idx = [i for i, d in enumerate(dates) if first_year <= d.year <= last_year]
-    
-        return np.array(idx)
+            if last_date.month < 12 or last_date.day < 30:
+                last_year = last_date.year - 1
+            else:
+                last_year = last_date.year
+        
+            first_year = last_year - n_years + 1
+        
+            idx = [i for i, d in enumerate(dates) if first_year <= d.year <= last_year]
+        
+            return np.array(idx)
 
     def cyclic(self,x):
         x = ((x + 180) % 360) -180
@@ -123,6 +129,62 @@ class Diagnostics:
                     dpi=200, bbox_inches="tight")
         plt.close()
 
+    def plot_map_gif(self, lon, lat, field, title, filename,
+                     cmap="coolwarm", levels=150,
+                     u=None, v=None, fps=5):
+    
+        nt = field.shape[0]
+    
+        vmin = np.nanmin(field)
+        vmax = np.nanmax(field) + self.epsilon
+    
+        frames = []
+    
+        for t in range(nt):
+    
+            fig = plt.figure(figsize=(15, 8))
+            ax = plt.axes(projection=ccrs.PlateCarree())
+    
+            cf = plt.contourf(
+                lon, lat, field[t],
+                np.linspace(vmin, vmax, levels),
+                cmap=cmap,
+                transform=ccrs.PlateCarree(),
+                extend="both"
+            )
+            cf.set_edgecolor("face")
+    
+            plt.colorbar(cf, fraction=0.046, pad=0.04)
+    
+            if u is not None and v is not None:
+                ax.streamplot(
+                    lon, lat, u[t], v[t],
+                    color="w",
+                    linewidth=0.3,
+                    density=1.5,
+                    transform=ccrs.PlateCarree()
+                )
+    
+            ax.add_feature(cfeature.GSHHSFeature("low", levels=[1, 2, 6]))
+            ax.coastlines()
+    
+            plt.title(f"{title} (t={t})", fontsize=18)
+    
+            frame_file = self.folder_path / f"_frame_{t:04d}.png"
+            plt.savefig(frame_file, dpi=200, bbox_inches="tight")
+            plt.close()
+    
+            frames.append(imageio.v2.imread(frame_file))
+    
+        gif_path = self.folder_path / filename
+        imageio.mimsave(gif_path, frames, fps=fps)
+    
+        for t in range(nt):
+            (self.folder_path / f"_frame_{t:04d}.png").unlink()
+    
+        print(f"GIF saved to {gif_path}")
+    
+
     def vertical_plot_map(self, lat, depth, field, title, filename,
                           cmap="coolwarm", levels=150):
     
@@ -156,93 +218,188 @@ class Diagnostics:
     
         plt.close()
 
-    def temp(self, n_years=10,vert=False):
-        idx = self.get_time_indices(n_years)
-        year = self.dates[idx[-1]].year
+    def temp(self, n_years=10, vert=False, snapshot=False, Gif=False, start_gif=None, end_gif=None):
         cmap = cmo.cm.thermal
-        if vert:
-            temp = np.mean(
-                self.ds.variables["temp"][idx, :, :, :],
-                axis=(0,3)
-            )
-            self.vertical_plot_map(
-                 self.yt, self.zt, temp,
-                f"Temperature (last {n_years} years)",
-                f"Temp_{year}_vert.pdf",
-                cmap = cmap
-            )
-
+        if snapshot:
+            idx = self.get_time_indices(n_years,snapshot=True)
+            year = self.snap_dates[idx[-1]].year
+            ds = self.ds_snap
         else:
-            temp = np.mean(
-                self.ds.variables["temp"][idx, -1, :, :],
-                axis=0
-            )
+            idx = self.get_time_indices(n_years)
+            year = self.dates[idx[-1]].year
+            ds = self.ds
 
-            temp = temp[:, self.sort_idx]
-
-
-            self.plot_map(
-                self.xt, self.yt, temp,
-                f"SST (last {n_years} years)",
-                f"SST_{year}.pdf",
-                cmap = cmap
-            )
-        if vert:
-            print("SST done")
+        if Gif:
+            idx_gif = idx
+            if start_gif is not None or end_gif is not None:
+                idx_gif = idx[start_gif:end_gif]
+    
+            if vert:
+                temp = np.mean(
+                    ds.variables["temp"][idx_gif, :, :, :],
+                    axis=3
+                )  
+    
+                self.vertical_plot_map_gif(
+                    self.yt, self.zt, temp,
+                    f"Temperature evolution",
+                    f"Temp_{year}_vert.gif",
+                    cmap=cmap
+                )
+    
+            else:
+                temp = ds.variables["temp"][idx_gif, -1, :, :]
+                temp = temp[:, :, self.sort_idx]
+    
+                self.plot_map_gif(
+                    self.xt, self.yt, temp,
+                    f"SST evolution",
+                    f"SST_{year}.gif",
+                    cmap=cmap
+                )
+    
         else:
+    
+            if vert:
+                temp = np.mean(
+                    ds.variables["temp"][idx, :, :, :],
+                    axis=(0, 3)
+                )
+    
+                self.vertical_plot_map(
+                    self.yt, self.zt, temp,
+                    f"Temperature (last {n_years} years)",
+                    f"Temp_{year}_vert.pdf",
+                    cmap=cmap
+                )
+    
+            else:
+                temp = np.mean(
+                    ds.variables["temp"][idx, -1, :, :],
+                    axis=0
+                )
+    
+                temp = temp[:, self.sort_idx]
+    
+                self.plot_map(
+                    self.xt, self.yt, temp,
+                    f"SST (last {n_years} years)",
+                    f"SST_{year}.pdf",
+                    cmap=cmap
+                )
+    
+        if vert:
             print("Vertical temperature done")
+        else:
+            print("SST done")
 
-    def salt(self, n_years=10,vert=False):
-        idx = self.get_time_indices(n_years)
-        year = self.dates[idx[-1]].year
+
+    def salt(self, n_years=10, vert=False, snapshot=False, Gif=False, start_gif=None, end_gif=None):
         cmap = cmo.cm.haline
+        idx = self.get_time_indices(n_years,snapshot=False)
+        if snapshot:
+            year = self.snap_dates[idx[-1]].year
+            ds = self.ds_snap
+        else:
+            year = self.dates[idx[-1]].year
+            ds = self.ds
+
+        if Gif:
+            idx_gif = idx
+            if start_gif is not None or end_gif is not None:
+                idx_gif = idx[start_gif:end_gif]
+    
+            if vert:
+                salt = np.mean(
+                    ds.variables["salt"][idx_gif, :, :, :],
+                    axis=3
+                )  
+    
+                self.vertical_plot_map_gif(
+                    self.yt, self.zt, salt,
+                    f"Salinity evolution",
+                    f"Salt_{year}_vert.gif",
+                    cmap=cmap
+                )
+    
+            else:
+                salt = ds.variables["salt"][idx_gif, -1, :, :]
+                salt = salt[:, :, self.sort_idx] 
+    
+                self.plot_map_gif(
+                    self.xt, self.yt, salt,
+                    f"SSS evolution",
+                    f"SSS_{year}.gif",
+                    cmap=cmap
+                )
+    
+        else:
+    
+            if vert:
+                salt = np.mean(
+                    ds.variables["salt"][idx, :, :, :],
+                    axis=(0, 3)
+                )
+    
+                self.vertical_plot_map(
+                    self.yt, self.zt, salt,
+                    f"Salinity (last {n_years} years)",
+                    f"Salt_{year}_vert.pdf",
+                    cmap=cmap
+                )
+    
+            else:
+                salt = np.mean(
+                    ds.variables["salt"][idx, -1, :, :],
+                    axis=0
+                )
+    
+                salt = salt[:, self.sort_idx]
+    
+                self.plot_map(
+                    self.xt, self.yt, salt,
+                    f"SSS (last {n_years} years)",
+                    f"SSS_{year}.pdf",
+                    cmap=cmap
+                )
+    
         if vert:
-            salt = np.mean(
-                self.ds.variables["salt"][idx, :, :, :],
-                axis=(0,3)
-            )
-            self.vertical_plot_map(
-                 self.yt, self.zt, salt,
-                f"Salinity (last {n_years} years)",
-                f"Salt_{year}_vert.pdf",
-                cmap = cmap
-            )
+            print("Vertical salinity done")
+        else:
+            print("SSS done")
+
+    def ssh(self, n_years=10,snapshot=False, Gif=False, start_gif=None, end_gif=None):
+        idx = self.get_time_indices(n_years,snapshot=snapshot)
+        if snapshot:
+            ds = self.ds_snap
+            year = self.snap_dates[idx[-1]].year
+        else:
+            ds = self.ds
+            year = self.dates[idx[-1]].year
+        if Gif:
+            if start_gif is not None or end_gif is not None:
+                idx_gif = idx[start_gif:end_gif]
+            ssh = ds.variables["ssh"][idx_gif, :, :]
+            ssh = ssh[:,:,self.sort_idx]
+            ssh = ssh - np.nanmean(ssh)
+            self.plot_map_gif(
+                self.xt, self.yt, ssh,
+                f"SSH evolution)",
+                f"SSH_{year}.gif"
+                )
 
         else:
-            salt = np.mean(
-                self.ds.variables["salt"][idx, -1, :, :],
+            ssh = np.mean(
+                ds.variables["ssh"][idx, :, :],
                 axis=0
             )
-
-            salt = salt[:, self.sort_idx]
-
-
+            ssh = ssh[:, self.sort_idx]
+            ssh = ssh - np.nanmean(ssh)
             self.plot_map(
-                self.xt, self.yt, salt,
-                f"SSS (last {n_years} years)",
-                f"SSS_{year}.pdf",
-                cmap = cmap
+                self.xt, self.yt, ssh,
+                f"SSH (last {n_years} years)",
+                f"SSH_{year}.pdf"
             )
-
-        if vert:
-            print("SSS done")
-        else:
-            print("Vertical salinity done")
-
-    def ssh(self, n_years=10):
-        idx = self.get_time_indices(n_years)
-        ssh = np.mean(
-            self.ds.variables["ssh"][idx, :, :],
-            axis=0
-        )
-        ssh = ssh[:, self.sort_idx]
-        ssh = ssh - np.nanmean(ssh)
-        year = self.dates[idx[-1]].year
-        self.plot_map(
-            self.xt, self.yt, ssh,
-            f"SSH (last {n_years} years)",
-            f"SSH_{year}.pdf"
-        )
         print("SSH done")
 
     def heat_flux(self, n_years=10):
@@ -388,34 +545,54 @@ class Diagnostics:
     
         print('MLD plot done')
 
-    def velocity(self, n_years=10):
-        idx = self.get_time_indices(n_years)
-        u = np.mean(
-            self.ds.variables["u"][idx, -1, :, :],
-            axis=0
-        )
-        v = np.mean(
-            self.ds.variables["v"][idx, -1, :, :],
-            axis=0
-        )
-        u = u[:, self.sort_idx]
-        v = v[:, self.sort_idx]
-        speed = np.sqrt(u**2 + v**2)
-        year = self.dates[idx[-1]].year
-        cmap = cmr.ocean
-        self.plot_map(
-            self.xt, self.yt, speed,
-            f"Surface velocity (last {n_years} years)",
-            f"Velocity_{year}.pdf",
-            cmap=cmap,
-            u=u, v=v
-        )
+    def velocity(self, n_years=10,snapshot=False, Gif=False, start_gif=None, end_gif=None):
+        idx = self.get_time_indices(n_years,snapshot)
+        cmap = cmo.cm.speed
+        if snapshot:
+            year = self.snap_dates[idx[-1]].year
+            ds = self.ds_snap
+        else:
+            year = self.dates[idx[-1]].year
+            ds = self.ds
+
+        if Gif:
+            if start_gif is not None or end_gif is not None:
+                idx_gif = idx[start_gif:end_gif]
+            u = ds.variables["u"][idx_gif, -1, :, :]
+            v = ds.variables["v"][idx_gif, -1, :, :]
+            u = u[:,:,self.sort_idx]
+            v = v[:,:,self.sort_idx]
+            speed = np.sqrt(u**2 + v**2)
+            self.plot_map_gif(
+                    self.xt, self.yt, speed,
+                    f"Surface velocity evolution)",
+                    f"Velocity_{year}.gif",
+                    cmap=cmap,
+                    u=u, v=v
+                )
+        else:    
+            u = np.mean(
+                ds.variables["u"][idx, -1, :, :],
+                axis=0
+            )
+            v = np.mean(
+                ds.variables["v"][idx, -1, :, :],
+                axis=0
+            )
+            u = u[:, self.sort_idx]
+            v = v[:, self.sort_idx]
+            speed = np.sqrt(u**2 + v**2)
+            self.plot_map(
+                self.xt, self.yt, speed,
+                f"Surface velocity (last {n_years} years)",
+                f"Velocity_{year}.pdf",
+                cmap=cmap
+            )
         print("Velocity done")
 
     def energy(self):
-        eke_m = self.ds_energy['k_m'][:]
-
-        x = [datetime(d.year, d.month, d.day) for d in self.nrj_dates]
+        eke_m = self.ds_energy['k_m'][:1200]
+        x = [datetime(d.year, d.month, d.day, d.hour) for d in self.nrj_dates[:1200]]
         fig, ax = plt.subplots(figsize=(9, 4))
          
         ax.plot(x, eke_m,color='black', lw=0.5)
@@ -433,24 +610,22 @@ class Diagnostics:
         ax.grid(True,alpha=0.3)
         fig.autofmt_xdate()
         plt.tight_layout()
-        plt.savefig(self.folder_path/'Energy_plot.pdf')
+        plt.savefig(self.folder_path/'Pre_Energy_plot_ssh.pdf')
         plt.close()
         print("Energy done")
     
 
     def run_all(self, n_years_default=10):
-        self.sst(n_years_default,vert=True)
-        self.sst(n_years_default,vert=False)
-        self.sss(n_years_default,vert=True)
-        self.sss(n_years_default,vert=False)
-        self.ssh(n_years_default)
-        self.velocity(n_years_default)
-        self.energy()
-        self.heat_flux(n_years_default)
-        self.mld(n_years=1)
+        #self.temp(n_years_default,vert=False,snapshot=True,Gif=True,start_gif=0,end_gif=72)
+        #self.salt(n_years_default,vert=False,snapshot=True,Gif=True,start_gif=0,end_gif=72) 
+        #self.ssh(n_years_default,snapshot=True,Gif=True,start_gif=0,end_gif=72)
+        self.velocity(n_years_default,snapshot=True,Gif=True,start_gif=0,end_gif=72)
+        #self.energy()
+        #self.heat_flux(n_years_default)
+        #self.mld(n_years=1)
 
 start = datetime(1986,1,1)
-run_dir = "/Odyssey/private/e25cheve/simu_veros/runs/global_1deg_glorys"
+run_dir = "/Odyssey/private/e25cheve/simu_veros/runs/global_1deg_glorys/"
 D = Diagnostics(run_dir,start)
 D.run_all()
 
