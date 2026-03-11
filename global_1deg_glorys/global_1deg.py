@@ -20,6 +20,7 @@ import os
 import h5netcdf
 import xarray as xr
 
+from veros.core.utilities import enforce_boundaries
 from veros import VerosSetup, tools, time, veros_routine, veros_kernel, KernelOutput
 from veros.variables import Variable, allocate
 from veros.core.operators import numpy as npx, update, update_multiply, at
@@ -230,6 +231,7 @@ class GlobalOneDegreeSetup(VerosSetup):
         # Engl channel
         mask_channel = (i >= 269) & (i < 271) & (j == 130)  # i = 270,271; j = 131
         vs.kbot = update_multiply(vs.kbot, at[2:-2, 2:-2], ~mask_channel)
+        vs.kbot = enforce_boundaries(vs.kbot, settings.enable_cyclic_x, local=True)
 
     @veros_routine(
         dist_safe=False,
@@ -245,13 +247,20 @@ class GlobalOneDegreeSetup(VerosSetup):
             "tauy",
             "temp",
             "salt",
+            "ssh",
+            "u",
+            "v",
             "forc_iw_bottom",
             "forc_iw_surface",
             "kbot",
             "maskT",
+            "maskU",
+            "maskV",
             "maskW",
             "xt",
+            "xu",
             "yt",
+            "yu",
             "zt",
             "zw",
             "dzt",
@@ -268,7 +277,10 @@ class GlobalOneDegreeSetup(VerosSetup):
         # grids
 
         t_grid = (vs.xt[2:-2], vs.yt[2:-2], vs.zt)
-        xt_init, yt_init, zt_init = (self._read_init(k) for k in ("lon","lat","zt"))
+        u_grid = (vs.xu[2:-2], vs.yt[2:-2], vs.zt)
+        v_grid = (vs.xt[2:-2], vs.yu[2:-2], vs.zt)
+
+        xt_init, xu_init, yt_init, yu_init, zt_init = (self._read_init(k) for k in ("lon","lon_u","lat","lat_u","zt"))
 
         # initial conditions
         
@@ -276,11 +288,28 @@ class GlobalOneDegreeSetup(VerosSetup):
         temp_data = tools.interpolate((xt_init, yt_init, zt_init), temp_raw, t_grid)
         vs.temp = update(vs.temp, at[2:-2, 2:-2, :, 0], temp_data * vs.maskT[2:-2, 2:-2, :])
         vs.temp = update(vs.temp, at[2:-2, 2:-2, :, 1], temp_data * vs.maskT[2:-2, 2:-2, :])
+        vs.temp = update(vs.temp, at[2:-2, 2:-2, :, 2], temp_data * vs.maskT[2:-2, 2:-2, :])
 
         salt_raw = self._read_init("so")[...,0]
         salt_data = tools.interpolate((xt_init, yt_init, zt_init), salt_raw, t_grid)
         vs.salt = update(vs.salt, at[2:-2, 2:-2, :, 0], salt_data * vs.maskT[2:-2, 2:-2, :])
         vs.salt = update(vs.salt, at[2:-2, 2:-2, :, 1], salt_data * vs.maskT[2:-2, 2:-2, :])
+        vs.salt = update(vs.salt, at[2:-2, 2:-2, :, 2], salt_data * vs.maskT[2:-2, 2:-2, :])
+
+        #ssh_raw = self._read_init("zos")[...,0]
+        #vs.ssh = update(vs.ssh, at[2:-2, 2:-2], ssh_raw * vs.maskT[2:-2, 2:-2, -1])
+
+        #u_raw = self._read_init("uo")[...,0]
+        #u_data = tools.interpolate((xu_init, yt_init, zt_init), u_raw, u_grid)
+        #vs.u = update(vs.u, at[2:-2, 2:-2, :, 0], u_data * vs.maskU[2:-2, 2:-2, :])
+        #vs.u = update(vs.u, at[2:-2, 2:-2, :, 1], u_data * vs.maskU[2:-2, 2:-2, :])
+        #vs.u = update(vs.u, at[2:-2, 2:-2, :, 2], u_data * vs.maskU[2:-2, 2:-2, :])
+
+        #v_raw = self._read_init("vo")[...,0]
+        #v_data = tools.interpolate((xt_init, yu_init, zt_init), v_raw, v_grid)
+        #vs.v = update(vs.v, at[2:-2, 2:-2, :, 0], v_data * vs.maskV[2:-2, 2:-2, :])
+        #vs.v = update(vs.v, at[2:-2, 2:-2, :, 1], v_data * vs.maskV[2:-2, 2:-2, :])
+        #vs.v = update(vs.v, at[2:-2, 2:-2, :, 2], v_data * vs.maskV[2:-2, 2:-2, :])
 
         t_star = self._read_restoring("thetao")
         vs.t_star = update(vs.t_star, at[2:-2, 2:-2,:], t_star * vs.maskT[2:-2, 2:-2, -1, npx.newaxis])
@@ -330,6 +359,8 @@ class GlobalOneDegreeSetup(VerosSetup):
             vs.taux = update(vs.taux, at[2:-2, 2:-2, :], taux_data) 
             tauy_data = self.get_ERA5("nsss",n1,n2)/3600
             vs.tauy = update(vs.tauy, at[2:-2, 2:-2, :], tauy_data) 
+            #vs.taux = enforce_boundaries(vs.taux, settings.enable_cyclic_x)
+            #vs.tauy = enforce_boundaries(vs.tauy, settings.enable_cyclic_x)
             vs.update(set_forcing_kernel(state))
             str_ = self.get_ERA5("str",n1,n2)
             Qir = str_/3600
@@ -386,10 +417,10 @@ class GlobalOneDegreeSetup(VerosSetup):
 
         state.diagnostics["averages"].output_variables = average_vars
         state.diagnostics["cfl_monitor"].output_frequency = 10 * 86400.0
-        state.diagnostics["snapshot"].output_frequency = 360 * 86400 
+        state.diagnostics["snapshot"].output_frequency = 360 * 86400  
         state.diagnostics["overturning"].output_frequency = 360 * 86400
         state.diagnostics["overturning"].sampling_frequency = 5 * 86400 
-        state.diagnostics["energy"].output_frequency = 5 * 86400 
+        state.diagnostics["energy"].output_frequency = 5*86400
         state.diagnostics["energy"].sampling_frequency = 86400/2
         state.diagnostics["averages"].output_frequency = 360 * 86400 / 12
         state.diagnostics["averages"].sampling_frequency = 86400/2
@@ -413,9 +444,8 @@ def set_forcing_kernel(state):
     (n1, f1), (n2, f2) = tools.get_periodic_interval(vs.time, year_in_seconds, year_in_seconds / n_forcing, n_forcing)
 
     (n1_rest, f1_rest), (n2_rest, f2_rest) = tools.get_periodic_interval(vs.time, year_in_seconds, year_in_seconds / 12.0, 12)
-    # linearly interpolate wind stress and shift from MITgcm U/V grid to this grid
-    vs.surface_taux = update(vs.surface_taux, at[:-1, :], f1 * vs.taux[1:, :, 0] + f2 * vs.taux[1:, :, 1])
-    vs.surface_tauy = update(vs.surface_tauy, at[:, :-1], f1 * vs.tauy[:, 1:, 0] + f2 * vs.tauy[:, 1:, 1])
+    vs.surface_taux = update(vs.surface_taux, at[:, :], f1 * vs.taux[:, :, 0] + f2 * vs.taux[:, :, 1])
+    vs.surface_tauy = update(vs.surface_tauy, at[:, :], f1 * vs.tauy[:, :, 0] + f2 * vs.tauy[:, :, 1])
 
     if settings.enable_tke:
         vs.forc_tke_surface = update(
