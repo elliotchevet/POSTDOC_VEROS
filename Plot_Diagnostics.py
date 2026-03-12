@@ -69,7 +69,6 @@ class Diagnostics:
 
     def get_time_indices(self, n_years=10, snapshot=False):
         dates = self.snap_dates if snapshot else self.dates
-        print(dates)
         last_date = dates[-1]
         if last_date.year == self.start_date.year:
             return np.arange(len(dates))
@@ -217,6 +216,51 @@ class Diagnostics:
         )
     
         plt.close()
+
+    def vertical_plot_map_gif(self, lat, depth, field, title, filename,
+                          cmap="coolwarm", levels=150, fps=5):
+
+        nt = field.shape[0]
+
+        vmin = np.nanmin(field)
+        vmax = np.nanmax(field) + self.epsilon
+
+        frames = []
+
+        for t in range(nt):
+
+            plt.figure(figsize=(10, 6))
+
+            cf = plt.contourf(
+                lat, -depth, field[t],
+                np.linspace(vmin, vmax, levels),
+                cmap=cmap,
+                extend="both"
+            )
+
+            cf.set_edgecolor("face")
+
+            plt.colorbar(cf, fraction=0.046, pad=0.04)
+
+            plt.gca().invert_yaxis()
+
+            plt.xlabel("Latitude")
+            plt.ylabel("Depth (m)")
+            plt.title(f"{title} (t={t})", fontsize=18)
+
+            frame_file = self.folder_path / f"_frame_{t:04d}.png"
+            plt.savefig(frame_file, dpi=200, bbox_inches="tight")
+            plt.close()
+
+            frames.append(imageio.v2.imread(frame_file))
+
+        gif_path = self.folder_path / filename
+        imageio.mimsave(gif_path, frames, fps=fps)
+
+        for t in range(nt):
+            (self.folder_path / f"_frame_{t:04d}.png").unlink()
+
+        print(f"GIF saved to {gif_path}")
 
     def temp(self, n_years=10, vert=False, snapshot=False, Gif=False, start_gif=None, end_gif=None):
         cmap = cmo.cm.thermal
@@ -407,12 +451,12 @@ class Diagnostics:
         idx = self.get_time_indices(n_years)
 
         qnet = np.mean(
-            self.ds.variables["qnet"][idx, :, :],
+            self.ds.variables["qnet"][idx,0, :, :],
             axis=0
         )
 
         qsol = np.mean(
-            self.ds.variables["qsol"][idx, :, :],
+            self.ds.variables["qsol"][idx,0, :, :],
             axis=0
         )
 
@@ -545,7 +589,7 @@ class Diagnostics:
     
         print('MLD plot done')
 
-    def velocity(self, n_years=10,snapshot=False, Gif=False, start_gif=None, end_gif=None):
+    def velocity(self, n_years=10, vert=False,snapshot=False, Gif=False, start_gif=None, end_gif=None):
         idx = self.get_time_indices(n_years,snapshot)
         cmap = cmo.cm.speed
         if snapshot:
@@ -558,41 +602,73 @@ class Diagnostics:
         if Gif:
             if start_gif is not None or end_gif is not None:
                 idx_gif = idx[start_gif:end_gif]
-            u = ds.variables["u"][idx_gif, -1, :, :]
-            v = ds.variables["v"][idx_gif, -1, :, :]
-            u = u[:,:,self.sort_idx]
-            v = v[:,:,self.sort_idx]
-            speed = np.sqrt(u**2 + v**2)
-            self.plot_map_gif(
-                    self.xt, self.yt, speed,
-                    f"Surface velocity evolution)",
-                    f"Velocity_{year}.gif",
-                    cmap=cmap,
-                    u=u, v=v
-                )
+            if vert:
+                u = np.mean(
+                        ds.variables["u"][idx_gif, :, :, :],
+                        axis=3)
+                v = np.mean(
+                        ds.variables["v"][idx_gif, :, :, :],
+                        axis=3)
+                speed = np.sqrt(u**2 + v**2)
+                self.vertical_plot_map_gif(
+                        self.yt, self.zt, speed,
+                        f"Velocity evolution)",
+                        f"Velocity_{year}.gif",
+                        cmap=cmap
+                    )
+
+            else:
+                u = ds.variables["u"][idx_gif, -1, :, :]
+                v = ds.variables["v"][idx_gif, -1, :, :]
+                u = u[:,:,self.sort_idx]
+                v = v[:,:,self.sort_idx]
+                speed = np.sqrt(u**2 + v**2)
+                self.plot_map_gif(
+                        self.xt, self.yt, speed,
+                        f"Surface velocity evolution)",
+                        f"Velocity_{year}.gif",
+                        cmap=cmap
+                    )
         else:    
-            u = np.mean(
-                ds.variables["u"][idx, -1, :, :],
-                axis=0
-            )
-            v = np.mean(
-                ds.variables["v"][idx, -1, :, :],
-                axis=0
-            )
-            u = u[:, self.sort_idx]
-            v = v[:, self.sort_idx]
-            speed = np.sqrt(u**2 + v**2)
-            self.plot_map(
-                self.xt, self.yt, speed,
-                f"Surface velocity (last {n_years} years)",
-                f"Velocity_{year}.pdf",
-                cmap=cmap
-            )
+            if vert:
+                u = np.mean(
+                    ds.variables["u"][idx, :, :, :],
+                    axis=(0,3)
+                )
+                v = np.mean(
+                    ds.variables["v"][idx, :, :, :],
+                    axis=(0,3)
+                )
+                speed = np.sqrt(u**2 + v**2)
+                self.vertical_plot_map(
+                    self.yt, self.zt, speed,
+                    f"Velocity (last {n_years} years)",
+                    f"Velocity_{year}_vert.pdf",
+                    cmap=cmap
+                )
+            else:
+                u = np.mean(
+                    ds.variables["u"][idx, -1, :, :],
+                    axis=0
+                )
+                v = np.mean(
+                    ds.variables["v"][idx, -1, :, :],
+                    axis=0
+                )
+                u = u[:, self.sort_idx]
+                v = v[:, self.sort_idx]
+                speed = np.sqrt(u**2 + v**2)
+                self.plot_map(
+                    self.xt, self.yt, speed,
+                    f"Surface velocity (last {n_years} years)",
+                    f"Velocity_{year}.pdf",
+                    cmap=cmap
+                )
         print("Velocity done")
 
     def energy(self):
-        eke_m = self.ds_energy['k_m'][:1200]
-        x = [datetime(d.year, d.month, d.day, d.hour) for d in self.nrj_dates[:1200]]
+        eke_m = self.ds_energy['k_m'][:]
+        x = [datetime(d.year, d.month, d.day, d.hour) for d in self.nrj_dates[:]]
         fig, ax = plt.subplots(figsize=(9, 4))
          
         ax.plot(x, eke_m,color='black', lw=0.5)
@@ -616,16 +692,16 @@ class Diagnostics:
     
 
     def run_all(self, n_years_default=10):
-        #self.temp(n_years_default,vert=False,snapshot=True,Gif=True,start_gif=0,end_gif=72)
-        #self.salt(n_years_default,vert=False,snapshot=True,Gif=True,start_gif=0,end_gif=72) 
-        #self.ssh(n_years_default,snapshot=True,Gif=True,start_gif=0,end_gif=72)
-        self.velocity(n_years_default,snapshot=True,Gif=True,start_gif=0,end_gif=72)
+        #self.temp(n_years_default,snapshot=True,vert=True,Gif=True,start_gif=0,end_gif=48)
+        #self.salt(n_years_default) 
+        #self.ssh(n_years_default)
+        self.velocity(n_years_default,snapshot=True,vert=True,Gif=True,start_gif=0,end_gif=48)
         #self.energy()
         #self.heat_flux(n_years_default)
         #self.mld(n_years=1)
 
 start = datetime(1986,1,1)
-run_dir = "/Odyssey/private/e25cheve/simu_veros/runs/global_1deg_glorys/"
+run_dir = "/Odyssey/private/e25cheve/simu_veros/runs/global_1deg_glorys/output/details/"
 D = Diagnostics(run_dir,start)
 D.run_all()
 

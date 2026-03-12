@@ -30,6 +30,9 @@ def regrid_era5_to_veros(
 
     if "yt" in ds_veros: ds_veros = ds_veros.rename({"yt": "lat"})
     if "xt" in ds_veros: ds_veros = ds_veros.rename({"xt": "lon"})
+    if verbose: print("Adjusting veros longitude to 0–360…")
+    ds_veros = ds_veros.assign_coords(lon=(ds_veros.lon % 360))
+    ds_veros = ds_veros.sortby("lon")
 
     if verbose: print("Opening ERA5 dataset for coordinate extraction…")
     ds_full = xr.open_dataset(ERA5_path, chunks={"time": 1})
@@ -53,10 +56,10 @@ def regrid_era5_to_veros(
     grid_tgt = ds_veros[["lon", "lat"]]
     if os.path.exists(weights_path):
         if verbose: print("Reusing existing weights:", weights_path)
-        regridder = xe.Regridder(grid_src, grid_tgt, method, reuse_weights=True, filename=weights_path)
+        regridder = xe.Regridder(grid_src, grid_tgt, method, reuse_weights=True, periodic=True,filename=weights_path)
     else:
         if verbose: print("Computing weights (one-time cost)…")
-        regridder = xe.Regridder(grid_src, grid_tgt, method, reuse_weights=False, filename=weights_path)
+        regridder = xe.Regridder(grid_src, grid_tgt, method, reuse_weights=False, periodic=True, filename=weights_path)
 
     for var in variables:
         if os.path.exists(output_path):
@@ -79,6 +82,10 @@ def regrid_era5_to_veros(
             regridded_list.append(frame_rg)
     
         var_out = xr.concat(regridded_list, dim="time")
+        lon_out = var_out.lon.values
+        lon_shift = np.where(lon_out < 90.5, lon_out + 360, lon_out)
+        var_out = var_out.assign_coords(lon=lon_shift)
+        var_out = var_out.sortby("lon")
         var_out.attrs["units"] = var_da.attrs.get("units", "unknown")
         var_out.attrs["long_name"] = var_da.attrs.get("long_name", var)
         var_out.attrs["regrid_method"] = method
@@ -114,8 +121,8 @@ for fname in sorted(os.listdir(ERA5_files)):
 
     year = int(match.group(1))
 
-    if year <= 1993:
-        continue
+    #if year <= 1993:
+    #    continue
 
     ERA5_path = os.path.join(ERA5_files, fname)
 
